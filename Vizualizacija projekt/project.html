@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>World Alcohol Consumption Map</title>
+  <style>
+    html,body{margin:0;padding:0;height:100%;width:100%;font-family:system-ui,sans-serif;}
+    #wrapper{position:relative;width:100%;height:100%;}
+    svg.map{width:100%;height:100vh;background:#f0f0f0;cursor:grab;}
+    svg.map:active{cursor:grabbing;}
+    path{stroke:#555;stroke-width:0.5px;transition:fill 0.2s,opacity 0.2s;}
+    path.active{stroke:#000;stroke-width:0.8px;fill:#ff9933;}
+    .tooltip{position:absolute;pointer-events:none;padding:4px 8px;background:rgba(0,0,0,0.75);color:#fff;border-radius:4px;font-size:0.8rem;white-space:nowrap;opacity:0;transition:opacity 0.2s;}
+    .info-box{position:absolute;top:10px;left:10px;padding:8px 12px;background:#fff;border:1px solid #ccc;border-radius:4px;font-size:0.9rem;box-shadow:0 0 5px rgba(0,0,0,0.15);display:none;}
+    .legend{position:absolute;bottom:20px;left:20px;display:flex;gap:6px;align-items:center;user-select:none;}
+    .legend-item{display:flex;flex-direction:column;align-items:center;cursor:pointer;font-size:0.75rem;}
+    .legend-swatch{width:22px;height:22px;border:1px solid #555;margin-bottom:2px;}
+    .legend-item.active .legend-swatch{outline:3px solid #000;}
+  </style>
+</head>
+<body>
+  <div id="wrapper">
+    <svg class="map"></svg>
+    <div class="info-box"></div>
+    <div class="legend"></div>
+    <div class="tooltip"></div>
+  </div>
+
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script>
+  (function(){
+    const GEO_FILE  = 'custom.geo.json';
+    const DATA_FILE = 'total-alcohol-consumption-per-capita-litres-of-pure-alcohol.csv';
+
+    const svg = d3.select('svg.map');
+    const g   = svg.append('g');
+
+    const projection = d3.geoNaturalEarth1();
+    const path = d3.geoPath(projection);
+
+    // Color scale (liters per capita)
+    const threshold = d3.scaleThreshold()
+        .domain([2,5,8,12])
+        .range(['#e0f3f8','#a8ddb5','#7bccc4','#43a2ca','#0868ac']);
+
+    // Legend bins (low..high inclusive of low, exclusive of high except last)
+    const bins = [
+      {range:[0,2],  label:'<2'},
+      {range:[2,5],  label:'2–5'},
+      {range:[5,8],  label:'5–8'},
+      {range:[8,12], label:'8–12'},
+      {range:[12,Infinity],label:'>12'}
+    ];
+
+    let initialTransform = d3.zoomIdentity;
+    let centered = null;
+    let activeBin = null; // currently selected legend bin
+
+    const tooltip = d3.select('.tooltip');
+    const infoBox = d3.select('.info-box');
+    const legendDiv = d3.select('.legend');
+
+    const zoom = d3.zoom()
+      .scaleExtent([1,8])
+      .on('zoom', (event)=> g.attr('transform',event.transform));
+    svg.call(zoom);
+
+    Promise.all([
+      d3.json(GEO_FILE),
+      d3.csv(DATA_FILE, d=>({code:d.Code,year:+d.Year,value:+d["Total alcohol consumption per capita (liters of pure alcohol, projected estimates, 15+ years of age)"]}))
+    ]).then(([geoData, rows])=>{
+      // latest year per ISO code
+      const alcoholByCode = new Map();
+      rows.forEach(r=>{
+        const cur = alcoholByCode.get(r.code);
+        if(!cur || r.year>cur.year){alcoholByCode.set(r.code,{value:r.value,year:r.year});}
+      });
+
+      const width = svg.node().clientWidth;
+      const height = svg.node().clientHeight;
+      projection.fitSize([width,height], geoData);
+
+      // Draw countries
+      const countryPaths = g.selectAll('path')
+        .data(geoData.features)
+        .enter().append('path')
+        .attr('d', path)
+        .attr('fill', d=>{
+          const code = d.properties.iso_a3||d.id;
+          const rec = alcoholByCode.get(code);
+          return rec?threshold(rec.value):'#eee';
+        })
+        .on('mouseover', (event,d)=>{
+          const name = d.properties.name || d.properties.admin || d.properties.name_long || 'Unknown';
+          tooltip.text(name)
+            .style('left',(event.pageX+8)+'px')
+            .style('top',(event.pageY-20)+'px')
+            .style('opacity',0.9);
+        })
+        .on('mousemove', (event)=> tooltip.style('left',(event.pageX+8)+'px').style('top',(event.pageY-20)+'px'))
+        .on('mouseout', ()=> tooltip.style('opacity',0))
+        .on('click', (event,d)=>{
+          event.stopPropagation();
+          handleCountryClick(event,d,alcoholByCode,width,height);
+        });
+
+      // Legend
+      legendDiv.selectAll('.legend-item')
+        .data(bins)
+        .enter().append('div')
+        .attr('class','legend-item')
+        .each(function(bin,i){
+          const item = d3.select(this);
+          item.append('div')
+              .attr('class','legend-swatch')
+              .style('background', threshold((bin.range[0]+bin.range[1]*0.999)||0));
+          item.append('div').text(bin.label);
+        })
+        .on('click', function(event,bin){
+          if(activeBin===bin){ // toggle off
+            activeBin=null;
+            legendDiv.selectAll('.legend-item').classed('active',false);
+            countryPaths.transition().duration(300).style('opacity',1);
+            return;
+          }
+          activeBin=bin;
+          legendDiv.selectAll('.legend-item').classed('active', d=>d===bin);
+          countryPaths.transition().duration(300).style('opacity', d=>{
+            const code=d.properties.iso_a3||d.id;
+            const rec=alcoholByCode.get(code);
+            const val=rec?rec.value:null;
+            return (val!=null && val>=bin.range[0] && val<bin.range[1])?1:0.15;
+          });
+        });
+
+      // Save initial transform
+      initialTransform = d3.zoomTransform(svg.node());
+
+      function handleCountryClick(event,d,alcoholByCode,width,height){
+        const code = d.properties.iso_a3||d.id;
+        const name = d.properties.name || d.properties.admin || d.properties.name_long || 'Unknown';
+        const rec  = alcoholByCode.get(code);
+        const msg = rec ? `${name}: ${rec.value.toFixed(2)} L po osobi (${rec.year})` : `${name}: nema podataka`;
+
+        if(d===centered){
+          centered=null;
+          countryPaths.classed('active',false);
+          infoBox.style('display','none').text('');
+          svg.transition().duration(750).call(zoom.transform, initialTransform);
+        }else{
+          centered=d;
+          countryPaths.classed('active',p=>p===d);
+          infoBox.style('display','block').text(msg);
+          const [[x0,y0],[x1,y1]] = path.bounds(d);
+          const k = Math.min(8, 0.9/Math.max((x1-x0)/width,(y1-y0)/height));
+          const xC=(x0+x1)/2, yC=(y0+y1)/2;
+          svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity.translate(width/2,height/2).scale(k).translate(-xC,-yC));
+        }
+      }
+
+      // Reset on background click
+      svg.on('click',()=>{
+        if(centered){
+          centered=null;
+          countryPaths.classed('active',false);
+          infoBox.style('display','none').text('');
+          svg.transition().duration(750).call(zoom.transform, initialTransform);
+        }
+      });
+
+    }).catch(err=>{
+      console.error(err);
+      alert('Greška pri učitavanju podataka. Provjeri datoteke i server.');
+    });
+  })();
+  </script>
+</body>
+</html>
