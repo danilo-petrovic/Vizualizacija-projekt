@@ -3,176 +3,346 @@
 <head>
   <meta charset="utf-8">
   <title>World Alcohol Consumption Map</title>
-  <style>
-    html,body{margin:0;padding:0;height:100%;width:100%;font-family:system-ui,sans-serif;}
-    #wrapper{position:relative;width:100%;height:100%;}
-    svg.map{width:100%;height:100vh;background:#f0f0f0;cursor:grab;}
-    svg.map:active{cursor:grabbing;}
-    path{stroke:#555;stroke-width:0.5px;transition:fill 0.2s,opacity 0.2s;}
-    path.active{stroke:#000;stroke-width:0.8px;fill:#ff9933;}
-    .tooltip{position:absolute;pointer-events:none;padding:4px 8px;background:rgba(0,0,0,0.75);color:#fff;border-radius:4px;font-size:0.8rem;white-space:nowrap;opacity:0;transition:opacity 0.2s;}
-    .info-box{position:absolute;top:10px;left:10px;padding:8px 12px;background:#fff;border:1px solid #ccc;border-radius:4px;font-size:0.9rem;box-shadow:0 0 5px rgba(0,0,0,0.15);display:none;}
-    .legend{position:absolute;bottom:20px;left:20px;display:flex;gap:6px;align-items:center;user-select:none;}
-    .legend-item{display:flex;flex-direction:column;align-items:center;cursor:pointer;font-size:0.75rem;}
-    .legend-swatch{width:22px;height:22px;border:1px solid #555;margin-bottom:2px;}
-    .legend-item.active .legend-swatch{outline:3px solid #000;}
-  </style>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="wrapper">
-    <svg class="map"></svg>
-    <div class="info-box"></div>
-    <div class="legend"></div>
-    <div class="tooltip"></div>
+<div id="wrapper">
+  <svg class="map"></svg>
+  <div class="info-box"></div>
+  <div class="legend"></div>
+  <button id="compare-btn">Compare</button>
+  <div class="tooltip"></div>
+
+  <canvas id="single-chart" width="350" height="250" class="chart"></canvas>
+  <canvas id="pie-chart" width="350" height="250" class="chart"></canvas>
+  <canvas id="male-chart" width="400" height="250" class="chart"></canvas>
+  <canvas id="female-chart" width="400" height="250" class="chart"></canvas>
+
+  <div id="year-control">
+    <input type="range" id="year-slider" step="5" min="1995" max="2020" value="2020">
+    <span id="year-label"></span>
+    <div id="year-values"></div>
   </div>
+</div>
 
-  <script src="https://d3js.org/d3.v7.min.js"></script>
-  <script>
-  (function(){
-    const GEO_FILE  = 'custom.geo.json';
-    const DATA_FILE = 'total-alcohol-consumption-per-capita-litres-of-pure-alcohol.csv';
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+(function(){
+const GEO_FILE='custom.geo.json';
+const TOTAL_FILE='total-alcohol-consumption-per-capita-litres-of-pure-alcohol.csv';
+const GENDER_FILE='alcohol-consumption-per-capita-men-women.csv';
+const BEER_FILE='beer-as-share-alcohol-consumption.csv';
+const MIN_YEAR=1995, MAX_YEAR=2020;
 
-    const svg = d3.select('svg.map');
-    const g   = svg.append('g');
+const colors=['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd'];
+const threshold=d3.scaleThreshold().domain([2,5,8,12]).range(colors);
+const bins=[
+  {range:[0,2],label:'<2'},
+  {range:[2,5],label:'2–5'},
+  {range:[5,8],label:'5–8'},
+  {range:[8,12],label:'8–12'},
+  {range:[12,Infinity],label:'>12'}
+];
+const keep5y = rows => rows.filter(r => r.Year >= MIN_YEAR && r.Year <= MAX_YEAR && (r.Year - MIN_YEAR) % 5 === 0);
 
-    const projection = d3.geoNaturalEarth1();
-    const path = d3.geoPath(projection);
+const svg=d3.select('svg.map'), g=svg.append('g');
+const projection=d3.geoNaturalEarth1(), path=d3.geoPath(projection);
+const tooltip=d3.select('.tooltip'), infoBox=d3.select('.info-box'), legendDiv=d3.select('.legend'), compareBtn=d3.select('#compare-btn');
+const singleC=document.getElementById('single-chart'), pieC=document.getElementById('pie-chart'), maleC=document.getElementById('male-chart'), femC=document.getElementById('female-chart');
+const yearCtl=document.getElementById('year-control'), slider=document.getElementById('year-slider'), yearLbl=document.getElementById('year-label'), yearVals=document.getElementById('year-values');
 
-    // Color scale (liters per capita)
-    const threshold = d3.scaleThreshold()
-        .domain([2,5,8,12])
-        .range(['#e0f3f8','#a8ddb5','#7bccc4','#43a2ca','#0868ac']);
+let initialTransform=d3.zoomIdentity, centered=null, activeBin=null;
+let compareMode=false, compareSel=[];
+let singleChart=null, pieChart=null, maleChart=null, femaleChart=null, genderMap=null, beerMap=null;
 
-    // Legend bins (low..high inclusive of low, exclusive of high except last)
-    const bins = [
-      {range:[0,2],  label:'<2'},
-      {range:[2,5],  label:'2–5'},
-      {range:[5,8],  label:'5–8'},
-      {range:[8,12], label:'8–12'},
-      {range:[12,Infinity],label:'>12'}
-    ];
+const zoom=d3.zoom().scaleExtent([1,8]).on('zoom',e=>g.attr('transform',e.transform));
+svg.call(zoom);
 
-    let initialTransform = d3.zoomIdentity;
-    let centered = null;
-    let activeBin = null; // currently selected legend bin
+compareBtn.on('click',()=>compareMode?exitCompare():enterCompare());
+function enterCompare(){
+  compareMode=true; compareSel=[]; compareBtn.classed('active',true);
+  infoBox.style('display','block').text('Select 2 countries to compare');
+  g.selectAll('path').classed('compareA',false).classed('compareB',false);
+  hideAllCharts();
+}
+function exitCompare(){
+  compareMode=false; compareSel=[]; compareBtn.classed('active',false);
+  g.selectAll('path').classed('compareA',false).classed('compareB',false);
+  infoBox.style('display','none').text('');
+  hideCompareCharts();
+}
 
-    const tooltip = d3.select('.tooltip');
-    const infoBox = d3.select('.info-box');
-    const legendDiv = d3.select('.legend');
+function showSingle(code){
+  let rows=genderMap.get(code)||[];
+  rows=keep5y(rows.map(r=>({...r,Year:+r.Year}))).sort((a,b)=>a.Year-b.Year);
+  const beerData=beerMap.get(code)||[];
+  if(!rows.length && !beerData.length){hideSingle();return;}
 
-    const zoom = d3.zoom()
-      .scaleExtent([1,8])
-      .on('zoom', (event)=> g.attr('transform',event.transform));
-    svg.call(zoom);
+  const mKey=Object.keys(rows[0] || {}).find(k=>k.includes('Male'));
+  const fKey=Object.keys(rows[0] || {}).find(k=>k.includes('Female'));
+  const years=rows.map(r=>r.Year);
+  const males=rows.map(r=>+r[mKey]);
+  const fems=rows.map(r=>+r[fKey]);
 
-    Promise.all([
-      d3.json(GEO_FILE),
-      d3.csv(DATA_FILE, d=>({code:d.Code,year:+d.Year,value:+d["Total alcohol consumption per capita (liters of pure alcohol, projected estimates, 15+ years of age)"]}))
-    ]).then(([geoData, rows])=>{
-      // latest year per ISO code
-      const alcoholByCode = new Map();
-      rows.forEach(r=>{
-        const cur = alcoholByCode.get(r.code);
-        if(!cur || r.year>cur.year){alcoholByCode.set(r.code,{value:r.value,year:r.year});}
-      });
-
-      const width = svg.node().clientWidth;
-      const height = svg.node().clientHeight;
-      projection.fitSize([width,height], geoData);
-
-      // Draw countries
-      const countryPaths = g.selectAll('path')
-        .data(geoData.features)
-        .enter().append('path')
-        .attr('d', path)
-        .attr('fill', d=>{
-          const code = d.properties.iso_a3||d.id;
-          const rec = alcoholByCode.get(code);
-          return rec?threshold(rec.value):'#eee';
-        })
-        .on('mouseover', (event,d)=>{
-          const name = d.properties.name || d.properties.admin || d.properties.name_long || 'Unknown';
-          tooltip.text(name)
-            .style('left',(event.pageX+8)+'px')
-            .style('top',(event.pageY-20)+'px')
-            .style('opacity',0.9);
-        })
-        .on('mousemove', (event)=> tooltip.style('left',(event.pageX+8)+'px').style('top',(event.pageY-20)+'px'))
-        .on('mouseout', ()=> tooltip.style('opacity',0))
-        .on('click', (event,d)=>{
-          event.stopPropagation();
-          handleCountryClick(event,d,alcoholByCode,width,height);
-        });
-
-      // Legend
-      legendDiv.selectAll('.legend-item')
-        .data(bins)
-        .enter().append('div')
-        .attr('class','legend-item')
-        .each(function(bin,i){
-          const item = d3.select(this);
-          item.append('div')
-              .attr('class','legend-swatch')
-              .style('background', threshold((bin.range[0]+bin.range[1]*0.999)||0));
-          item.append('div').text(bin.label);
-        })
-        .on('click', function(event,bin){
-          if(activeBin===bin){ // toggle off
-            activeBin=null;
-            legendDiv.selectAll('.legend-item').classed('active',false);
-            countryPaths.transition().duration(300).style('opacity',1);
-            return;
-          }
-          activeBin=bin;
-          legendDiv.selectAll('.legend-item').classed('active', d=>d===bin);
-          countryPaths.transition().duration(300).style('opacity', d=>{
-            const code=d.properties.iso_a3||d.id;
-            const rec=alcoholByCode.get(code);
-            const val=rec?rec.value:null;
-            return (val!=null && val>=bin.range[0] && val<bin.range[1])?1:0.15;
-          });
-        });
-
-      // Save initial transform
-      initialTransform = d3.zoomTransform(svg.node());
-
-      function handleCountryClick(event,d,alcoholByCode,width,height){
-        const code = d.properties.iso_a3||d.id;
-        const name = d.properties.name || d.properties.admin || d.properties.name_long || 'Unknown';
-        const rec  = alcoholByCode.get(code);
-        const msg = rec ? `${name}: ${rec.value.toFixed(2)} L po osobi (${rec.year})` : `${name}: nema podataka`;
-
-        if(d===centered){
-          centered=null;
-          countryPaths.classed('active',false);
-          infoBox.style('display','none').text('');
-          svg.transition().duration(750).call(zoom.transform, initialTransform);
-        }else{
-          centered=d;
-          countryPaths.classed('active',p=>p===d);
-          infoBox.style('display','block').text(msg);
-          const [[x0,y0],[x1,y1]] = path.bounds(d);
-          const k = Math.min(8, 0.9/Math.max((x1-x0)/width,(y1-y0)/height));
-          const xC=(x0+x1)/2, yC=(y0+y1)/2;
-          svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity.translate(width/2,height/2).scale(k).translate(-xC,-yC));
-        }
-      }
-
-      // Reset on background click
-      svg.on('click',()=>{
-        if(centered){
-          centered=null;
-          countryPaths.classed('active',false);
-          infoBox.style('display','none').text('');
-          svg.transition().duration(750).call(zoom.transform, initialTransform);
-        }
-      });
-
-    }).catch(err=>{
-      console.error(err);
-      alert('Greška pri učitavanju podataka. Provjeri datoteke i server.');
+  singleChart&&singleChart.destroy();
+  if(rows.length){
+    singleChart=new Chart(singleC.getContext('2d'),{
+      type:'line',
+      data:{labels:years,datasets:[
+        {label:'Men',data:males,borderWidth:2,fill:false,tension:0.3,pointRadius:Array(years.length).fill(0)},
+        {label:'Women',data:fems,borderWidth:2,fill:false,tension:0.3,pointRadius:Array(years.length).fill(0)}
+      ]},
+      options:{responsive:false,plugins:{legend:{position:'top'},title:{display:true,text:'Consumption of pure alcohol'}},scales:{y:{beginAtZero:true}}}
     });
-  })();
-  </script>
+    singleC.style.display='block';
+  }else{
+    singleC.style.display='none';
+  }
+
+  pieChart&&pieChart.destroy();
+  if(beerData.length){
+    const beerValue=+beerData[0]["Alcohol, consumption of pure alcohol by type of beverage (%) - Beverage types: Beer"];
+    if(!isNaN(beerValue)){
+      pieChart=new Chart(pieC.getContext('2d'),{
+        type:'pie',
+        data:{
+          labels:['Beer','Other Alcohol'],
+          datasets:[{
+            data:[beerValue,100-beerValue],
+            backgroundColor:['#ff7f0e','#1f77b4'],
+            borderWidth:1
+          }]
+        },
+        options:{
+          responsive:false,
+          plugins:{
+            legend:{position:'top'},
+            title:{display:true,text:'Beer vs Other Alcohol'}
+          }
+        }
+      });
+      pieC.style.display='block';
+    }else{
+      pieC.style.display='none';
+    }
+  }else{
+    pieC.style.display='none';
+  }
+
+  if(rows.length){
+    if(!yearCtl.parentNode) infoBox.node().appendChild(yearCtl);
+    slider.min=years[0]; slider.max=years.at(-1); slider.value=slider.max; yearCtl.style.display='block';
+    slider.oninput=()=>updateYear(+slider.value); updateYear(+slider.value);
+  }else{
+    yearCtl.style.display='none';
+  }
+
+  function updateYear(val){
+    yearLbl.textContent=val;
+    const i=years.indexOf(val);
+    if(i>-1){
+      yearVals.textContent=`M: ${males[i].toFixed(2)} L | Ž: ${fems[i].toFixed(2)} L`;
+      singleChart.data.datasets.forEach(ds=>ds.pointRadius=ds.data.map((_,j)=>j===i?4:0));
+    }else{
+      yearVals.textContent='no data';
+      singleChart.data.datasets.forEach(ds=>ds.pointRadius=Array(ds.data.length).fill(0));
+    }
+    singleChart&&singleChart.update('none');
+  }
+}
+function hideSingle(){singleC.style.display='none'; pieC.style.display='none'; yearCtl.style.display='none';}
+function hideCompareCharts(){maleC.style.display='none'; femC.style.display='none';}
+function hideAllCharts(){hideSingle(); hideCompareCharts();}
+
+Promise.all([
+  d3.json(GEO_FILE),
+  d3.csv(TOTAL_FILE,d=>({code:d.Code,year:+d.Year,value:+d["Total alcohol consumption per capita (liters of pure alcohol, projected estimates, 15+ years of age)"]})),
+  d3.csv(GENDER_FILE),
+  d3.csv(BEER_FILE)
+]).then(([geo,total,gRows,beerRows])=>{
+  const totalMap=new Map();
+  total.forEach(r=>{
+    const c=totalMap.get(r.code);
+    if(!c||r.year>c.year)totalMap.set(r.code,{value:r.value,year:r.year});
+  });
+  genderMap=d3.group(gRows,d=>d.Code);
+  beerMap=d3.group(beerRows,d=>d.Code);
+
+  projection.fitSize([svg.node().clientWidth,svg.node().clientHeight],geo);
+  const paths=g.selectAll('path').data(geo.features).enter().append('path')
+    .attr('d',path)
+    .attr('fill',d=>{
+      const rec=totalMap.get(d.properties.iso_a3||d.id);
+      return rec?threshold(rec.value):'#eee';
+    })
+    .on('mouseover',(e,d)=>tooltip.text(d.properties.name).style('left',(e.pageX+8)+'px').style('top',(e.pageY-20)+'px').style('opacity',0.9))
+    .on('mousemove',e=>tooltip.style('left',(e.pageX+8)+'px').style('top',(e.pageY-20)+'px'))
+    .on('mouseout',()=>tooltip.style('opacity',0))
+    .on('click',(e,d)=>{e.stopPropagation();compareMode?pickCompare(d):focusCountry(d);});
+
+  legendDiv.selectAll('.legend-item').data(bins).enter().append('div').attr('class','legend-item')
+    .each(function(bin){
+      const div=d3.select(this);
+      div.append('div').attr('class','legend-swatch')
+        .style('background',()=>{const x=bin.range[1]===Infinity?bin.range[0]+0.1:(bin.range[0]+bin.range[1])/2;return threshold(x);});
+      div.append('div').text(bin.label);
+    })
+    .on('click',function(_,bin){
+      if(activeBin===bin){activeBin=null;legendDiv.selectAll('.legend-item').classed('active',false);paths.transition().style('opacity',1);return;}
+      activeBin=bin;legendDiv.selectAll('.legend-item').classed('active',d=>d===bin);
+      paths.transition().style('opacity',d=>{
+        const v=(totalMap.get(d.properties.iso_a3||d.id)||{}).value;
+        return v>=bin.range[0]&&v<bin.range[1]?1:0.15;
+      });
+    });
+
+  d3.select('.legend').append('div').attr('class', 'legend-label').text('Consumption (L)');
+
+  initialTransform=d3.zoomTransform(svg.node());
+
+  svg.on('click',()=>{
+    hideAllCharts();
+    infoBox.style('display','none').text('');
+    paths.classed('active',false).classed('compareA',false).classed('compareB',false);
+    centered=null;
+    if(compareMode) exitCompare();
+    svg.transition().duration(750).call(zoom.transform,initialTransform);
+  });
+
+  function focusCountry(d){
+    const code=d.properties.iso_a3||d.id;
+    const rec=totalMap.get(code);
+    infoBox.style('display','block').text(rec?`${d.properties.name}: ${rec.value.toFixed(2)} L (${rec.year})`:`${d.properties.name}: no data`);
+    centered=d; paths.classed('active',p=>p===d);
+    const [[x0,y0],[x1,y1]]=path.bounds(d), {clientWidth:W,clientHeight:H}=svg.node();
+    const k=Math.min(8,0.9/Math.max((x1-x0)/W,(y1-y0)/H));
+    svg.transition().duration(750)
+      .call(zoom.transform,d3.zoomIdentity.translate(W/2,H/2).scale(k).translate(-(x0+x1)/2,-(y0+y1)/2));
+    showSingle(code);
+  }
+
+  function pickCompare(d){
+    if(compareSel.includes(d))return;
+    compareSel.push(d);
+    if(compareSel.length===1){
+      paths.classed('compareA',p=>p===d);
+    }else{
+      paths.classed('compareB',p=>p===d);
+      const [a,b]=compareSel;
+      showCompare({code:a.properties.iso_a3||a.id,name:a.properties.name},{code:b.properties.iso_a3||b.id,name:b.properties.name});
+      compareMode=false; compareBtn.classed('active',false);
+    }
+  }
+
+  function showCompare(a, b) {
+    const rowsA = keep5y(genderMap.get(a.code) || []).map(r => ({ ...r, Year: +r.Year }));
+    const rowsB = keep5y(genderMap.get(b.code) || []).map(r => ({ ...r, Year: +r.Year }));
+
+    const mKeyA = Object.keys(rowsA[0] || {}).find(k => k.includes('Male'));
+    const fKeyA = Object.keys(rowsA[0] || {}).find(k => k.includes('Female'));
+    const mKeyB = Object.keys(rowsB[0] || {}).find(k => k.includes('Male'));
+    const fKeyB = Object.keys(rowsB[0] || {}).find(k => k.includes('Female'));
+
+    function getValidAvgForYear(rows, mKey, fKey, year) {
+      const preferred = rows.find(r => r.Year === year);
+      if (preferred) {
+        const m = parseFloat(preferred[mKey]);
+        const f = parseFloat(preferred[fKey]);
+        if (!isNaN(m) && !isNaN(f)) return { value: ((m + f) / 2).toFixed(2), year };
+      }
+      const fallback = [...rows].reverse().find(r => r.Year < year && !isNaN(parseFloat(r[mKey])) && !isNaN(parseFloat(r[fKey])));
+      if (fallback) {
+        const m = parseFloat(fallback[mKey]);
+        const f = parseFloat(fallback[fKey]);
+        return { value: ((m + f) / 2).toFixed(2), year: fallback.Year };
+      }
+      return null;
+    }
+
+    const aData = getValidAvgForYear(rowsA, mKeyA, fKeyA, 2020);
+    const bData = getValidAvgForYear(rowsB, mKeyB, fKeyB, 2020);
+
+    const aDisplay = aData ? `${aData.value} L (${aData.year})` : 'no data';
+    const bDisplay = bData ? `${bData.value} L (${bData.year})` : 'no data';
+
+    infoBox.html(`
+      <strong>${a.name}</strong>: ${aDisplay}<br>
+      <strong>${b.name}</strong>: ${bDisplay}<br>
+      <em>${a.name}</em> vs <em>${b.name}</em>
+    `).style('display', 'block');
+
+    const yearsSet = new Set([...rowsA.map(r => r.Year), ...rowsB.map(r => r.Year)]);
+    const years = Array.from(yearsSet).filter(year => (year - MIN_YEAR) % 5 === 0).sort((a, b) => a - b);
+    if (!years.length) {
+      hideCompareCharts();
+      return;
+    }
+
+    const aM = years.map(y => {
+      const row = rowsA.find(r => r.Year === y);
+      return row ? +row[mKeyA] : null;
+    });
+    const bM = years.map(y => {
+      const row = rowsB.find(r => r.Year === y);
+      return row ? +row[mKeyB] : null;
+    });
+    const aF = years.map(y => {
+      const row = rowsA.find(r => r.Year === y);
+      return row ? +row[fKeyA] : null;
+    });
+    const bF = years.map(y => {
+      const row = rowsB.find(r => r.Year === y);
+      return row ? +row[fKeyB] : null;
+    });
+
+    maleChart && maleChart.destroy();
+    maleChart = new Chart(maleC.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: years,
+        datasets: [
+          { label: `${a.name}`, data: aM, borderColor: '#1f77b4', borderWidth: 2, fill: false, tension: .3 },
+          { label: `${b.name}`, data: bM, borderColor: '#d62728', borderWidth: 2, fill: false, tension: .3 }
+        ]
+      },
+      options: {
+        responsive: false,
+        plugins: {
+          legend: { position: 'top' },
+          title: { display: true, text: 'Men consumption (L)' }
+        },
+        scales: { y: { beginAtZero: true } }
+      }
+    });
+
+    femaleChart && femaleChart.destroy();
+    femaleChart = new Chart(femC.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: years,
+        datasets: [
+          { label: `${a.name}`, data: aF, borderColor: '#1f77b4', borderWidth: 2, fill: false, tension: .3 },
+          { label: `${b.name}`, data: bF, borderColor: '#d62728', borderWidth: 2, fill: false, tension: .3 }
+        ]
+      },
+      options: {
+        responsive: false,
+        plugins: {
+          legend: { position: 'top' },
+          title: { display: true, text: 'Women consumption (L)' }
+        },
+        scales: { y: { beginAtZero: true } }
+      }
+    });
+
+    maleC.style.display = 'block';
+    femC.style.display = 'block';
+  }
+
+}
+).catch(err=>alert('Data load error: '+err));
+})();
+</script>
 </body>
 </html>

@@ -1,0 +1,169 @@
+html,body{
+    margin:0;
+    padding:0;
+    height:100%;
+    width:100%;
+    font-family:sans-serif;
+}
+
+#wrapper{
+    position:relative;
+    height:100%;
+    width:100%;
+}
+
+svg.map{
+    width:100%;
+    height:100vh;
+    background:#f0f0f0;
+    cursor:grab;
+}
+
+svg.map:active{
+    cursor:grabbing;
+}
+
+path{
+    stroke:#555;
+    stroke-width:0.5px;
+    transition:fill .2s,
+    opacity .2s;
+}
+
+path.active{
+    stroke:#000;
+    stroke-width:.8px;
+    fill:#ff9933;
+}
+
+path.compareA{
+    fill:#ffd700;
+    stroke:#000;
+    stroke-width:1px;
+}
+
+path.compareB{
+    fill:#ff69b4;
+    stroke:#000;
+    stroke-width:1px;
+}
+
+.tooltip{
+    position:absolute;
+    pointer-events:none;
+    padding:4px 8px;
+    background:rgba(0,0,0,.8);
+    color:#fff;
+    border-radius:4px;
+    font-size:.8rem;
+    opacity:0;
+    transition:opacity .2s;
+}
+
+.info-box{
+    position:absolute;
+    top:10px;
+    left:10px;
+    padding:8px 12px;
+    background:#fff;
+    border:1px solid #ccc;
+    border-radius:4px;
+    font-size:.9rem;
+    box-shadow:0 0 5px rgba(0,0,0,.15);
+    display:none;
+    max-width:70%;
+}
+
+.legend{
+    position:absolute;
+    bottom:20px;
+    left:20px;
+    display:flex;
+    gap:6px;
+    align-items:center;
+    user-select:none;
+}
+
+.legend-label{
+    position:absolute;
+    bottom:45px;
+    left:20px;
+    font-size:.8rem;
+    color:#333;
+}
+
+.legend-item{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    font-size:.75rem;
+    cursor:pointer;
+}
+
+.legend-swatch{
+    width:22px;
+    height:22px;
+    border:1px solid #555;
+    margin-bottom:2px;
+}
+
+.legend-item.active .legend-swatch{
+    outline:3px solid #000;
+}
+
+#compare-btn{
+    position:absolute;
+    top:10px;
+    right:20px;
+    padding:8px 14px;
+    background:#fff;
+    border:1px solid #555;
+    border-radius:4px;
+    font-size:.9rem;
+    cursor:pointer;
+}
+
+#compare-btn.active{
+    background:#555;
+    color:#fff;
+}
+
+canvas.chart{
+    position:absolute;
+    background:#fff;
+    border:1px solid #ccc;
+    border-radius:6px;
+    display:none;
+}
+
+#single-chart {
+    bottom:20px;
+    right:460px;
+}
+
+#pie-chart {
+    bottom:20px;
+    right:20px;
+}
+
+#male-chart {
+    bottom:290px;
+    right:20px;
+}
+
+#female-chart {
+    bottom:20px;
+    right:20px;
+}
+
+#year-control{
+    margin-top:8px;
+    border-top:1px solid #ddd;
+    padding-top:6px;
+    font-size:.8rem;
+    display:none;
+}
+
+#year-control input{
+    width:220px;
+}
